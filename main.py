@@ -1,16 +1,22 @@
 import telebot
 import os
+import time
+import threading
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from yoomoney import Client
 
 # ================== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==================
 TOKEN = os.getenv("BOT_TOKEN")
 YOOMONEY_WALLET = os.getenv("YOOMONEY_WALLET")
+YOOMONEY_TOKEN = os.getenv("YOOMONEY_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 # =======================================================
 
 bot = telebot.TeleBot(TOKEN)
+client = Client(token=YOOMONEY_TOKEN)
 
-# Главное меню
+processed_payments = set()
+
 def main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     markup.add(KeyboardButton("⭐ Купить звезды ⭐"))
@@ -34,11 +40,6 @@ def handle_text(message):
         markup.add(InlineKeyboardButton("100⭐ — 140₽", callback_data="pay_100_140"))
         markup.add(InlineKeyboardButton("150⭐ — 210₽", callback_data="pay_150_210"))
         bot.send_message(message.chat.id, "Выберите количество звёзд:", reply_markup=markup)
-    
-    elif message.text == "🎁 Купить подарки 🎁":
-        bot.send_message(message.chat.id, "🎁 Раздел подарков скоро будет готов!")
-    elif message.text == "❗Поддержка❗":
-        bot.send_message(message.chat.id, "Напишите свой вопрос сюда → @твой_ник")
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -47,7 +48,6 @@ def callback_handler(call):
         stars = int(parts[1])
         amount = int(parts[2])
         
-        # Точная ссылка как в Salebot (payment_sum)
         pay_url = f"https://yoomoney.ru/transfer?to={YOOMONEY_WALLET}&amount={amount}&comment=Telegram%20Stars%20{stars}"
         
         text = f"✅ Вы выбрали:\n{stars}⭐ — {amount}₽"
@@ -57,22 +57,46 @@ def callback_handler(call):
         markup.add(InlineKeyboardButton("✅ Я оплатил", callback_data=f"paid_{stars}_{amount}"))
         
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
-    
-    elif call.data.startswith("paid_"):
-        parts = call.data.split("_")
-        stars = parts[1]
-        amount = parts[2]
-        
-        bot.answer_callback_query(call.id, "Спасибо!")
-        bot.send_message(call.message.chat.id, f"✅ Оплата прошла!\nОжидайте выдачу {stars}⭐ (1–5 минут)")
-        
-        # Пересылаем тебе
-        bot.send_message(ADMIN_ID, 
-            f"💰 НОВАЯ ОПЛАТА!\n"
-            f"Пользователь: @{call.from_user.username} (ID: {call.from_user.id})\n"
-            f"Звёзды: {stars}⭐\n"
-            f"Сумма: {amount}₽\n"
-            f"Проверь оплату и выдай звёзды!")
 
-print("Бот запущен...")
+    elif call.data.startswith("paid_"):
+        bot.answer_callback_query(call.id, "Проверяем...")
+        bot.send_message(call.message.chat.id, "✅ Оплата проверяется автоматически каждые 30 секунд.\nКак только деньги придут — звёзды будут выданы мгновенно!")
+
+# ================== АВТОМАТИЧЕСКАЯ ПРОВЕРКА ==================
+def check_payments():
+    while True:
+        try:
+            history = client.operation_history(limit=10)
+            for operation in history.operations:
+                if operation.status != 'success' or operation.amount <= 0:
+                    continue
+                comment = str(operation.comment or "")
+                if "Telegram Stars" not in comment:
+                    continue
+                payment_id = operation.operation_id
+                if payment_id in processed_payments:
+                    continue
+                
+                try:
+                    stars = int(comment.split("Telegram Stars ")[-1])
+                except:
+                    continue
+                
+                processed_payments.add(payment_id)
+                
+                bot.send_message(ADMIN_ID, 
+                    f"💰 АВТО ОПЛАТА ПОЛУЧЕНА!\n"
+                    f"Сумма: {operation.amount} ₽\n"
+                    f"Звёзды: {stars}⭐\n"
+                    f"ID операции: {payment_id}")
+                
+                print(f"Автоматически выдано {stars} звёзд")
+        except Exception as e:
+            print("Ошибка проверки оплаты:", e)
+        
+        time.sleep(30)
+
+threading.Thread(target=check_payments, daemon=True).start()
+
+print("Бот запущен с автоматической проверкой оплаты...")
 bot.infinity_polling()
