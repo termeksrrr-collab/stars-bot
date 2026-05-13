@@ -13,8 +13,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 # =======================================================
 
 bot = telebot.TeleBot(TOKEN)
-client = Client(token=YOOMONEY_TOKE
-
+client = Client(token=YOOMONEY_TOKEN)
 processed_payments = set()
 
 def main_menu():
@@ -27,7 +26,7 @@ def main_menu():
 @bot.message_handler(commands=['start'])
 def start(message):
     text = """Здравствуйте
-Я бот по продаже 
+Я бот по продаже
 ⭐звёзд
 🎁удаленные праздничные подарки"""
     bot.send_message(message.chat.id, text, reply_markup=main_menu())
@@ -72,7 +71,7 @@ def callback_handler(call):
 
     elif call.data.startswith("paid_"):
         bot.answer_callback_query(call.id, "Проверяем...")
-bot.send_message(call.message.chat.id, "✅ Оплата проверяется автоматически каждые 30 секунд.\nКак только деньги придут — звёзды будут выданы!")
+        bot.send_message(call.message.chat.id, "✅ Оплата проверяется автоматически каждые 30 секунд.\nКак только деньги придут — звёзды будут выданы!")
 
 # ================== АВТОМАТИЧЕСКАЯ ПРОВЕРКА ==================
 def check_payments():
@@ -88,28 +87,27 @@ def check_payments():
                 payment_id = operation.operation_id
                 if payment_id in processed_payments:
                     continue
-                
+
                 try:
                     stars = int(comment.split("Telegram Stars ")[-1])
                 except:
                     continue
-                
+
                 processed_payments.add(payment_id)
-                
-                bot.send_message(ADMIN_ID, 
+
+                bot.send_message(ADMIN_ID,
                     f"💰 АВТО ОПЛАТА ПОЛУЧЕНА!\n"
                     f"Сумма: {operation.amount} ₽\n"
                     f"Звёзды: {stars}⭐\n"
                     f"ID операции: {payment_id}")
-                
+
                 print(f"Автоматически выдано {stars} звёзд")
         except Exception as e:
             print("Ошибка проверки оплаты:", e)
-        
+
         time.sleep(30)
 
 threading.Thread(target=check_payments, daemon=True).start()
 
 print("Бот запущен с автоматической проверкой оплаты...")
 bot.infinity_polling()
-
