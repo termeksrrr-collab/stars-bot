@@ -17,7 +17,8 @@ bot = telebot.TeleBot(TOKEN)
 client = Client(token=YOOMONEY_TOKEN)
 
 processed_payments = set()
-pending_orders = {}  # label → данные заказа
+pending_orders = {}      # label → данные заказа
+user_states = {}         # chat_id → {'stars': int, 'amount': int}
 
 def main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
@@ -28,43 +29,47 @@ def main_menu():
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    text = """Здравствуйте
-Я бот по продаже
-⭐звёзд
-🎁удаленные праздничные подарки"""
-    bot.send_message(message.chat.id, text, reply_markup=main_menu())
+    bot.send_message(message.chat.id, 
+                     "Здравствуйте\nЯ бот по продаже\n⭐звёзд\n🎁удаленные праздничные подарки",
+                     reply_markup=main_menu())
 
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
-    if message.text == "⭐ Купить звезды ⭐":
+    text = message.text.strip()
+
+    if text == "⭐ Купить звезды ⭐":
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(InlineKeyboardButton("50⭐ — 70₽", callback_data="pay_50_70"))
         markup.add(InlineKeyboardButton("100⭐ — 140₽", callback_data="pay_100_140"))
         markup.add(InlineKeyboardButton("150⭐ — 210₽", callback_data="pay_150_210"))
         bot.send_message(message.chat.id, "Выберите количество звёзд:", reply_markup=markup)
 
-    elif message.text == "🎁 Купить подарки 🎁":
+    elif text == "🎁 Купить подарки 🎁":
         bot.send_message(message.chat.id, "🎁 Функция покупки подарков пока в разработке.\nСкоро будет доступна!")
-
-    elif message.text == "❗Поддержка❗":
+    elif text == "❗Поддержка❗":
         bot.send_message(message.chat.id, "❗ Напишите @ваш_ник_для_поддержки\nМы ответим в ближайшее время!")
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    if call.data.startswith("pay_"):
-        parts = call.data.split("_")
-        stars = int(parts[1])
-        amount = int(parts[2])
+    # Ввод @username
+    elif message.chat.id in user_states:
+        username = text.replace("@", "").strip()
+        if not username:
+            bot.send_message(message.chat.id, "❌ Введите корректный @username")
+            return
 
-        order_label = f"stars_{stars}_{call.message.chat.id}_{int(time.time())}"
+        data = user_states[message.chat.id]
+        stars = data['stars']
+        amount = data['amount']
+
+        order_label = f"stars_{stars}_{message.chat.id}_{int(time.time())}"
 
         pending_orders[order_label] = {
-            'user_id': call.message.chat.id,
-            'username': call.from_user.username or call.from_user.first_name or "no_username",
+            'user_id': message.chat.id,
+            'custom_username': username,
             'stars': stars,
-            'amount': amount,
-            'time': time.time()
+            'amount': amount
         }
+
+        del user_states[message.chat.id]
 
         targets = f"Покупка {stars}⭐ Telegram Stars"
         params = {
@@ -77,13 +82,27 @@ def callback_handler(call):
         }
         pay_url = "https://yoomoney.ru/quickpay/confirm.xml?" + urlencode(params)
 
-        text = f"✅ Вы выбрали:\n{stars}⭐ — {amount}₽"
-
+        text_confirm = f"✅ Заказ:\n{stars}⭐ — {amount}₽\nДля: @{username}"
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(InlineKeyboardButton("💳 Оплатить через ЮMoney", url=pay_url))
         markup.add(InlineKeyboardButton("✅ Я оплатил", callback_data=f"paid_{stars}_{amount}"))
 
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+        bot.send_message(message.chat.id, text_confirm, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    if call.data.startswith("pay_"):
+        parts = call.data.split("_")
+        stars = int(parts[1])
+        amount = int(parts[2])
+
+        user_states[call.message.chat.id] = {'stars': stars, 'amount': amount}
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(
+            f"Вы выбрали {stars}⭐ — {amount}₽\n\nКому доставить звёзды?\nНапишите @username :",
+            call.message.chat.id,
+            call.message.message_id
+        )
 
     elif call.data.startswith("paid_"):
         bot.answer_callback_query(call.id, "Проверяем...")
@@ -93,26 +112,10 @@ def callback_handler(call):
             "Как только деньги придут — я сразу получу уведомление."
         )
 
-    elif call.data == "back_to_menu":
-        bot.answer_callback_query(call.id)
-        bot.edit_message_text(
-            "Главное меню:",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=None
-        )
-        bot.send_message(call.message.chat.id, "Выберите действие:", reply_markup=main_menu())
-
-# ================== АВТОМАТИЧЕСКАЯ ПРОВЕРКА ==================
+# ================== ПРОВЕРКА ОПЛАТЫ ==================
 def check_payments():
     while True:
         try:
-            # Удаляем старые заказы (старше 2 часов)
-            now = time.time()
-            for label in list(pending_orders.keys()):
-                if now - pending_orders[label]['time'] > 7200:
-                    del pending_orders[label]
-
             history = client.operation_history(limit=30)
             for operation in history.operations:
                 if operation.status != 'success' or operation.amount <= 0:
@@ -122,54 +125,35 @@ def check_payments():
                 if payment_id in processed_payments:
                     continue
 
-                label = getattr(operation, 'label', None) or ""
                 comment = str(getattr(operation, 'comment', '') or "")
 
-                # === ОСНОВНАЯ ПРОВЕРКА ПО LABEL ===
-                if label and label in pending_orders:
-                    data = pending_orders[label]
-                    if abs(operation.amount - data['amount']) > 1:
-                        continue
-
-                    user_id = data['user_id']
-                    username = data['username']
-                    stars = data['stars']
-
-                    bot.send_message(
-                        user_id,
-                        "✅ Оплата подтверждена!\nОжидайте, звёзды будут выданы вручную в ближайшее время."
-                    )
-
-                    # Кнопка возврата в меню
-                    menu_markup = InlineKeyboardMarkup()
-                    menu_markup.add(InlineKeyboardButton("🏠 Вернуться в меню", callback_data="back_to_menu"))
-                    bot.send_message(user_id, "Выберите действие:", reply_markup=menu_markup)
-
-                    bot.send_message(
-                        ADMIN_ID,
-                        f"💰 **ОПЛАТА ПОДТВЕРЖДЕНА!**\n"
-                        f"@{username} (id{user_id}) оплатил {stars}⭐\n"
-                        f"Сумма: {operation.amount} ₽\n"
-                        f"Label: {label}",
-                        parse_mode='Markdown'
-                    )
-
-                    processed_payments.add(payment_id)
-                    del pending_orders[label]
-                    continue
-
-                # Запасной вариант — по комментарию
                 if "Telegram Stars" in comment:
                     try:
                         stars = int(comment.split("Telegram Stars ")[-1])
-                        bot.send_message(
-                            ADMIN_ID,
-                            f"💰 **ОПЛАТА ПОДТВЕРЖДЕНА!**\n"
-                            f"Неизвестный пользователь оплатил {stars}⭐\n"
-                            f"Сумма: {operation.amount} ₽",
-                            parse_mode='Markdown'
-                        )
-                        processed_payments.add(payment_id)
+                        amount_received = operation.amount
+
+                        # Ищем заказ (ослабленная проверка суммы из-за комиссии)
+                        for label, data in list(pending_orders.items()):
+                            if data['stars'] == stars and abs(data['amount'] - amount_received) < 10:   # ← ИСПРАВЛЕНО
+                                username = data['custom_username']
+                                user_id = data['user_id']
+
+                                # Клиенту
+                                bot.send_message(
+                                    user_id,
+                                    "✅ Оплата подтверждена!\nОжидайте, звёзды будут выданы вручную."
+                                )
+
+                                # Тебе в личку
+                                bot.send_message(
+                                    ADMIN_ID,
+                                    f"💰 Кто-то оплатил!\n"
+                                    f"@{username} оплатил {stars}⭐"
+                                )
+
+                                processed_payments.add(payment_id)
+                                del pending_orders[label]
+                                break
                     except:
                         pass
 
@@ -180,5 +164,5 @@ def check_payments():
 
 threading.Thread(target=check_payments, daemon=True).start()
 
-print("Бот запущен с автоматической проверкой оплаты...")
+print("Бот запущен — комиссия ЮMoney учтена (допуск 10 ₽)")
 bot.infinity_polling()
