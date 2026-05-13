@@ -14,7 +14,9 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 bot = telebot.TeleBot(TOKEN)
 client = Client(token=YOOMONEY_TOKEN)
+
 processed_payments = set()
+pending_orders = {}  # label → данные о заказе
 
 def main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
@@ -47,10 +49,18 @@ def callback_handler(call):
         stars = int(parts[1])
         amount = int(parts[2])
 
-        # === НОВАЯ ПРАВИЛЬНАЯ ССЫЛКА (как было в Salebot) ===
-        targets = f"Покупка {stars}⭐ Telegram Stars"
+        # === УНИКАЛЬНЫЙ LABEL + сохраняем заказ ===
         order_label = f"stars_{stars}_{call.message.chat.id}_{int(time.time())}"
 
+        pending_orders[order_label] = {
+            'user_id': call.message.chat.id,
+            'username': call.from_user.username or call.from_user.first_name or "no_username",
+            'stars': stars,
+            'amount': amount
+        }
+
+        # Предзаполненная ссылка ЮMoney
+        targets = f"Покупка {stars}⭐ Telegram Stars"
         pay_url = (
             f"https://yoomoney.ru/quickpay/confirm.xml?"
             f"receiver={YOOMONEY_WALLET}&"
@@ -71,37 +81,60 @@ def callback_handler(call):
 
     elif call.data.startswith("paid_"):
         bot.answer_callback_query(call.id, "Проверяем...")
-        bot.send_message(call.message.chat.id, "✅ Оплата проверяется автоматически каждые 30 секунд.\nКак только деньги придут — звёзды будут выданы!")
+        bot.send_message(
+            call.message.chat.id,
+            "✅ Оплата проверяется автоматически каждые 30 секунд.\n"
+            "Как только деньги придут — я получу уведомление и сразу выдам тебе звёзды вручную."
+        )
 
 # ================== АВТОМАТИЧЕСКАЯ ПРОВЕРКА ==================
 def check_payments():
     while True:
         try:
-            history = client.operation_history(limit=10)
+            history = client.operation_history(limit=15)
             for operation in history.operations:
                 if operation.status != 'success' or operation.amount <= 0:
                     continue
-                comment = str(operation.comment or "")
-                if "Telegram Stars" not in comment:
-                    continue
+
                 payment_id = operation.operation_id
                 if payment_id in processed_payments:
                     continue
 
-                try:
-                    stars = int(comment.split("Telegram Stars ")[-1])
-                except:
+                # === ОСНОВНАЯ ПРОВЕРКА ПО LABEL ===
+                label = getattr(operation, 'label', None)
+                if label and label in pending_orders:
+                    data = pending_orders[label]
+                    username = data['username']
+                    user_id = data['user_id']
+                    stars = data['stars']
+
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"💰 **ОПЛАТА ПОДТВЕРЖДЕНА!**\n"
+                        f"@{username} (id{user_id}) оплатил {stars}⭐\n"
+                        f"Сумма: {operation.amount} ₽\n"
+                        f"Label: {label}"
+                    )
+
+                    processed_payments.add(payment_id)
+                    del pending_orders[label]          # удаляем обработанный заказ
                     continue
 
-                processed_payments.add(payment_id)
+                # Запасной вариант (по комментарию)
+                comment = str(operation.comment or "")
+                if "Telegram Stars" in comment:
+                    try:
+                        stars = int(comment.split("Telegram Stars ")[-1])
+                        bot.send_message(
+                            ADMIN_ID,
+                            f"💰 **ОПЛАТА ПОДТВЕРЖДЕНА!**\n"
+                            f"Неизвестный пользователь оплатил {stars}⭐\n"
+                            f"Сумма: {operation.amount} ₽"
+                        )
+                        processed_payments.add(payment_id)
+                    except:
+                        pass
 
-                bot.send_message(ADMIN_ID,
-                    f"💰 АВТО ОПЛАТА ПОЛУЧЕНА!\n"
-                    f"Сумма: {operation.amount} ₽\n"
-                    f"Звёзды: {stars}⭐\n"
-                    f"ID операции: {payment_id}")
-
-                print(f"Автоматически выдано {stars} звёзд")
         except Exception as e:
             print("Ошибка проверки оплаты:", e)
 
