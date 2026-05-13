@@ -4,6 +4,7 @@ import time
 import threading
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from yoomoney import Client
+from urllib.parse import urlencode
 
 # ================== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==================
 TOKEN = os.getenv("BOT_TOKEN")
@@ -16,7 +17,7 @@ bot = telebot.TeleBot(TOKEN)
 client = Client(token=YOOMONEY_TOKEN)
 
 processed_payments = set()
-pending_orders = {}  # label → данные о заказе
+pending_orders = {}  # label → данные заказа
 
 def main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
@@ -42,6 +43,12 @@ def handle_text(message):
         markup.add(InlineKeyboardButton("150⭐ — 210₽", callback_data="pay_150_210"))
         bot.send_message(message.chat.id, "Выберите количество звёзд:", reply_markup=markup)
 
+    elif message.text == "🎁 Купить подарки 🎁":
+        bot.send_message(message.chat.id, "🎁 Функция покупки подарков пока в разработке.\nСкоро будет доступна!")
+
+    elif message.text == "❗Поддержка❗":
+        bot.send_message(message.chat.id, "❗ Напишите @ваш_ник_для_поддержки\nМы ответим в ближайшее время!")
+
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     if call.data.startswith("pay_"):
@@ -49,27 +56,26 @@ def callback_handler(call):
         stars = int(parts[1])
         amount = int(parts[2])
 
-        # === УНИКАЛЬНЫЙ LABEL + сохраняем заказ ===
         order_label = f"stars_{stars}_{call.message.chat.id}_{int(time.time())}"
 
         pending_orders[order_label] = {
             'user_id': call.message.chat.id,
             'username': call.from_user.username or call.from_user.first_name or "no_username",
             'stars': stars,
-            'amount': amount
+            'amount': amount,
+            'time': time.time()
         }
 
-        # Предзаполненная ссылка ЮMoney
         targets = f"Покупка {stars}⭐ Telegram Stars"
-        pay_url = (
-            f"https://yoomoney.ru/quickpay/confirm.xml?"
-            f"receiver={YOOMONEY_WALLET}&"
-            f"quickpay-form=shop&"
-            f"targets={targets.replace(' ', '%20')}&"
-            f"sum={amount}&"
-            f"label={order_label}&"
-            f"comment=Telegram%20Stars%20{stars}"
-        )
+        params = {
+            "receiver": YOOMONEY_WALLET,
+            "quickpay-form": "shop",
+            "targets": targets,
+            "sum": amount,
+            "label": order_label,
+            "comment": f"Telegram Stars {stars}"
+        }
+        pay_url = "https://yoomoney.ru/quickpay/confirm.xml?" + urlencode(params)
 
         text = f"✅ Вы выбрали:\n{stars}⭐ — {amount}₽"
 
@@ -84,14 +90,30 @@ def callback_handler(call):
         bot.send_message(
             call.message.chat.id,
             "✅ Оплата проверяется автоматически каждые 30 секунд.\n"
-            "Как только деньги придут — я получу уведомление и сразу выдам тебе звёзды вручную."
+            "Как только деньги придут — я сразу получу уведомление."
         )
+
+    elif call.data == "back_to_menu":
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(
+            "Главное меню:",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=None
+        )
+        bot.send_message(call.message.chat.id, "Выберите действие:", reply_markup=main_menu())
 
 # ================== АВТОМАТИЧЕСКАЯ ПРОВЕРКА ==================
 def check_payments():
     while True:
         try:
-            history = client.operation_history(limit=15)
+            # Удаляем старые заказы (старше 2 часов)
+            now = time.time()
+            for label in list(pending_orders.keys()):
+                if now - pending_orders[label]['time'] > 7200:
+                    del pending_orders[label]
+
+            history = client.operation_history(limit=30)
             for operation in history.operations:
                 if operation.status != 'success' or operation.amount <= 0:
                     continue
@@ -100,28 +122,43 @@ def check_payments():
                 if payment_id in processed_payments:
                     continue
 
+                label = getattr(operation, 'label', None) or ""
+                comment = str(getattr(operation, 'comment', '') or "")
+
                 # === ОСНОВНАЯ ПРОВЕРКА ПО LABEL ===
-                label = getattr(operation, 'label', None)
                 if label and label in pending_orders:
                     data = pending_orders[label]
-                    username = data['username']
+                    if abs(operation.amount - data['amount']) > 1:
+                        continue
+
                     user_id = data['user_id']
+                    username = data['username']
                     stars = data['stars']
+
+                    bot.send_message(
+                        user_id,
+                        "✅ Оплата подтверждена!\nОжидайте, звёзды будут выданы вручную в ближайшее время."
+                    )
+
+                    # Кнопка возврата в меню
+                    menu_markup = InlineKeyboardMarkup()
+                    menu_markup.add(InlineKeyboardButton("🏠 Вернуться в меню", callback_data="back_to_menu"))
+                    bot.send_message(user_id, "Выберите действие:", reply_markup=menu_markup)
 
                     bot.send_message(
                         ADMIN_ID,
                         f"💰 **ОПЛАТА ПОДТВЕРЖДЕНА!**\n"
                         f"@{username} (id{user_id}) оплатил {stars}⭐\n"
                         f"Сумма: {operation.amount} ₽\n"
-                        f"Label: {label}"
+                        f"Label: {label}",
+                        parse_mode='Markdown'
                     )
 
                     processed_payments.add(payment_id)
-                    del pending_orders[label]          # удаляем обработанный заказ
+                    del pending_orders[label]
                     continue
 
-                # Запасной вариант (по комментарию)
-                comment = str(operation.comment or "")
+                # Запасной вариант — по комментарию
                 if "Telegram Stars" in comment:
                     try:
                         stars = int(comment.split("Telegram Stars ")[-1])
@@ -129,7 +166,8 @@ def check_payments():
                             ADMIN_ID,
                             f"💰 **ОПЛАТА ПОДТВЕРЖДЕНА!**\n"
                             f"Неизвестный пользователь оплатил {stars}⭐\n"
-                            f"Сумма: {operation.amount} ₽"
+                            f"Сумма: {operation.amount} ₽",
+                            parse_mode='Markdown'
                         )
                         processed_payments.add(payment_id)
                     except:
