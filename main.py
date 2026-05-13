@@ -13,7 +13,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 # =======================================================
 
 bot = telebot.TeleBot(TOKEN)
-client = Client(token=YOOMONEY_TOKEN)
+client = Client(token=YOOMONEY_TOKE
 
 processed_payments = set()
 
@@ -47,20 +47,32 @@ def callback_handler(call):
         parts = call.data.split("_")
         stars = int(parts[1])
         amount = int(parts[2])
-        
-        pay_url = f"https://yoomoney.ru/transfer?to={YOOMONEY_WALLET}&amount={amount}&comment=Telegram%20Stars%20{stars}"
-        
+
+        # === НОВАЯ ПРАВИЛЬНАЯ ССЫЛКА (как было в Salebot) ===
+        targets = f"Покупка {stars}⭐ Telegram Stars"
+        order_label = f"stars_{stars}_{call.message.chat.id}_{int(time.time())}"
+
+        pay_url = (
+            f"https://yoomoney.ru/quickpay/confirm.xml?"
+            f"receiver={YOOMONEY_WALLET}&"
+            f"quickpay-form=shop&"
+            f"targets={targets.replace(' ', '%20')}&"
+            f"sum={amount}&"
+            f"label={order_label}&"
+            f"comment=Telegram%20Stars%20{stars}"
+        )
+
         text = f"✅ Вы выбрали:\n{stars}⭐ — {amount}₽"
-        
+
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(InlineKeyboardButton("💳 Оплатить через ЮMoney", url=pay_url))
         markup.add(InlineKeyboardButton("✅ Я оплатил", callback_data=f"paid_{stars}_{amount}"))
-        
+
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif call.data.startswith("paid_"):
         bot.answer_callback_query(call.id, "Проверяем...")
-        bot.send_message(call.message.chat.id, "✅ Оплата проверяется автоматически каждые 30 секунд.\nКак только деньги придут — звёзды будут выданы мгновенно!")
+bot.send_message(call.message.chat.id, "✅ Оплата проверяется автоматически каждые 30 секунд.\nКак только деньги придут — звёзды будут выданы!")
 
 # ================== АВТОМАТИЧЕСКАЯ ПРОВЕРКА ==================
 def check_payments():
@@ -100,3 +112,4 @@ threading.Thread(target=check_payments, daemon=True).start()
 
 print("Бот запущен с автоматической проверкой оплаты...")
 bot.infinity_polling()
+
